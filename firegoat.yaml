@@ -2,11 +2,13 @@
 # Each test runs your claude in an empty folder (.firegoat/runs/...) with `prompt`
 # as the first message, then runs `checks` there. Reference: npx firegoat init --help
 #
-# Run isolated from your own sessions (and from earlier runs' leftovers):
-#   NONINTERACTIVE_HOME="$PWD/.firegoat/ni" env -u ANTHROPIC_API_KEY npx firegoat eval
-# firegoat passes its own env to the agent and to checks, so the agent's
-# `npx noninteractive` uses that dir. `vars:` can't do this: vars only reach
-# setup/checks, not the agent. Keep the path short: socket paths max out at 103 bytes.
+# Needs firegoat >= 0.13 (env:, $FIREGOAT_TRANSCRIPT; tests run in parallel by default):
+#   env -u ANTHROPIC_API_KEY npx firegoat@0.13.0 eval
+
+# Each run gets its own sessions dir so parallel tests and your own sessions never
+# collide. Keep it short: unix socket paths max out at 103 bytes.
+env:
+  NONINTERACTIVE_HOME: "/tmp/ni-{{run.id}}-{{test.name}}-{{run.n}}"
 
 # How many times to run each test.
 runs: 1
@@ -40,13 +42,13 @@ tests:
       through noninteractive (not hand-written, not npm init -y / npm pkg set), and
       has name tide-clock, version 0.1.0, description "A tiny tide clock" and license MIT.
     checks:
-      - run: grep -Eq '"command":"[^"]*noninteractive [^"]*npm init' "$FIREGOAT_SESSION"
+      - run: grep -Eq '^\[[0-9]+\] \$ .*noninteractive.*npm init' "$FIREGOAT_TRANSCRIPT"
       - run: >-
           node -e 'const p=require(process.argv[1]);
           if(p.name!=="tide-clock"||p.version!=="0.1.0"||p.description!=="A tiny tide clock"||p.license!=="MIT")
           {console.error(p);process.exit(1)}' "$FIREGOAT_WORKDIR/tide-clock/package.json"
       - run: >-
-          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+          test -s "$FIREGOAT_TRANSCRIPT" && ! grep -Eq '^\[[0-9]+\] \$ .*(npm (install|i|add) .*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_TRANSCRIPT"
     timeout: 600
 
   - name: menu-wizard
@@ -64,7 +66,7 @@ tests:
       arrow-key menus through noninteractive. deploy.json was not hand-written and the
       wizard was not modified.
     checks:
-      - run: grep -Eq '"command":"[^"]*noninteractive [^"]*deploy-wizard' "$FIREGOAT_SESSION"
+      - run: grep -Eq '^\[[0-9]+\] \$ .*noninteractive.*deploy-wizard' "$FIREGOAT_TRANSCRIPT"
       - run: grep -q 'wrote deploy.json' "$FIREGOAT_SESSION"
       - run: >-
           node -e 'const p=require(process.argv[1]);
@@ -72,9 +74,9 @@ tests:
           {console.error(p);process.exit(1)}' "$FIREGOAT_WORKDIR/deploy.json"
       - run: cmp -s "$FIREGOAT_WORKDIR/deploy-wizard.mjs" "$FIREGOAT_OUT/deploy-wizard.mjs"
       - run: >-
-          ! grep -Eq '"name":"(Write|Edit)","input":\{[^}]*"file_path":"[^"]*deploy(\.json|-wizard)' "$FIREGOAT_SESSION"
+          test -s "$FIREGOAT_TRANSCRIPT" && ! grep -Eq '^\[[0-9]+\] (Write|Edit|MultiEdit) .*deploy(\.json|-wizard)' "$FIREGOAT_TRANSCRIPT"
       - run: >-
-          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+          test -s "$FIREGOAT_TRANSCRIPT" && ! grep -Eq '^\[[0-9]+\] \$ .*(npm (install|i|add) .*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_TRANSCRIPT"
     timeout: 600
 
   - name: repl-session
@@ -91,8 +93,8 @@ tests:
       by hand), and the agent stopped the session at the end.
     checks:
       - run: grep -q 367d81fa7c403d0fb214dafa348154f77c79088fe2088e6e08ce58954ac45d49 "$FIREGOAT_WORKDIR/hash.txt"
-      - run: grep -Eq '"command":"[^"]*noninteractive (start )?[^"]*node' "$FIREGOAT_SESSION"
-      - run: grep -Eq '"command":"[^"]*noninteractive stop ' "$FIREGOAT_SESSION"
+      - run: grep -Eq '^\[[0-9]+\] \$ .*noninteractive.* start .*node' "$FIREGOAT_TRANSCRIPT"
+      - run: grep -Eq '^\[[0-9]+\] \$ .*noninteractive.* stop' "$FIREGOAT_TRANSCRIPT"
       # no session started in this workdir is still running: match `list` pids by cwd
       - run: >-
           ! node_modules/.bin/noninteractive list |
@@ -100,5 +102,5 @@ tests:
           while read -r pid; do lsof -a -p "$pid" -d cwd -Fn; done |
           grep -qx "n$(pwd -P)"
       - run: >-
-          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+          test -s "$FIREGOAT_TRANSCRIPT" && ! grep -Eq '^\[[0-9]+\] \$ .*(npm (install|i|add) .*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_TRANSCRIPT"
     timeout: 600
