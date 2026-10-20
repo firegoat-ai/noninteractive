@@ -46,7 +46,7 @@ Session dirs (bin/, urls file) cleaned up on stop/exit.
 
 ## AX evals (firegoat)
 
-`firegoat.yaml` holds 3 agent-experience evals (quickstart `npm init`, arrow-key menu wizard, node REPL lifecycle). Run with `npx -y firegoat@0.9.0 eval --json`; results land in `.firegoat/runs/` (ignored). Setup packs the local build and installs the tgz into each workdir — a PATH-only binary doesn't work because `npx noninteractive` falls back to the registry. Each eval run rebuilds `bin/`. Known friction surfaced: `send` returns the full transcript incl. every menu redraw, `list` lags right after `stop`, dead sessions never pruned from `~/.noninteractive`.
+`firegoat.yaml` holds 3 agent-experience evals (quickstart `npm init`, arrow-key menu wizard, node REPL lifecycle). Run with `npx -y firegoat@0.9.0 eval --json`; results land in `.firegoat/runs/` (ignored). Setup packs the local build and installs the tgz into each workdir — a PATH-only binary doesn't work because `npx noninteractive` falls back to the registry. Each eval run rebuilds `bin/`. Fixtures live in `evals/fixtures/` (setup copies them to `$FIREGOAT_OUT`; not shipped — package.json `files` whitelists only bin/native). Run with `env -u ANTHROPIC_API_KEY` or firegoat bills the API key instead of the claude login. Known friction surfaced: `send` returns the full transcript incl. every menu redraw, `list` lags right after `stop`, dead sessions never pruned from `~/.noninteractive`.
 
 ## Notes
 
