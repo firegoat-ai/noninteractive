@@ -1,9 +1,10 @@
 import { createConnection } from "node:net";
 
+export type OutputMode = "new" | "screen" | "all";
+
 export interface DaemonResponse {
 	ok: boolean;
 	output?: string;
-	outputLength?: number;
 	exited?: boolean;
 	exitCode?: number | null;
 	running?: boolean;
@@ -11,6 +12,7 @@ export interface DaemonResponse {
 	error?: string;
 	urls?: string[];
 	intercepted?: string[];
+	selfOpen?: boolean;
 }
 
 export function sendMessage(

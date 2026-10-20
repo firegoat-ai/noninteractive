@@ -6,7 +6,7 @@ allowed-tools: Bash(npx noninteractive *)
 argument-hint: "<tool> [args...]"
 metadata:
   author: 2027dev
-  version: "1.7"
+  version: "1.8"
 ---
 
 # noninteractive
@@ -71,7 +71,7 @@ npx noninteractive send <session> "\x1b[B"
 npx noninteractive send <session> "\x1b[B\x1b[B\r"
 ```
 
-**`send` returns the full terminal output by default.** You do NOT need to call `read` after `send`.
+**`send` returns what changed on screen since your last `send`/`read`** (the next prompt, the repainted menu in its final state). You do NOT need to call `read` after `send`, and you never need to pipe through `tail`/`head`.
 
 The correct workflow is: **start → send → send → ... → stop**
 
@@ -167,9 +167,9 @@ npx noninteractive stop workos
 - **`send` returns output by default**: Do not follow it with `read`. The output is already there. Use `--no-wait` to fire-and-forget.
 - **Escape sequences are parsed**: `\r` = Enter, `\x1b[B` = arrow down, etc. Use regular double quotes, not `$'...'`.
 - **Empty string = Enter**: `send session ""` is the easiest way to press Enter.
-- **ANSI codes stripped**: Output is clean text — no escape sequences to parse.
+- **Rendered output**: Output goes through a terminal emulator, so it is clean text — menus and prompts that redraw show their final state once. Bold/inverse text is marked `**like this**`.
 - **First run timeout**: npx may need to install the package. Use `--timeout 60000` or higher on the first wait.
-- **Output accumulates**: Output contains ALL text since session start. Look at the end for the latest prompt.
+- **Output is incremental**: each `send`/`read` prints only what is new since the previous one (`[no new output]` if nothing changed). Add `--screen` for the current 80x24 screen or `--all` for the whole rendered history.
 - **Sessions persist**: Sessions run as background daemons. Use `list` to see active sessions.
 - **Parallel sessions**: If a session name is already taken, a suffix is added automatically (e.g., `eslint`, `eslint-2`, `eslint-3`).
 - **Real PTY**: The child process sees `isTTY=true`. Terminal menus and raw mode work correctly.

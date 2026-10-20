@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, resolve } from "node:path";
+import type { OutputMode } from "./client";
 import {
 	ensureSessionsDir,
 	sessionBinDir,
@@ -18,14 +19,19 @@ import {
 	sessionUrlsFile,
 	socketPath,
 } from "./paths";
-import { extractUrls } from "./urls";
+import { Screen } from "./screen";
+import { announcesSelfOpen, extractUrls } from "./urls";
 
 interface DaemonMessage {
 	action: "read" | "send" | "sendread" | "stop" | "status";
 	data?: string;
 	wait?: boolean;
 	timeout?: number;
+	mode?: OutputMode;
 }
+
+const OUTPUT_MODES: readonly OutputMode[] = ["new", "screen", "all"];
+const SELF_OPEN_WINDOW_MAX = 4000;
 
 // map node's process.arch to Go's GOARCH, which is what the shipped binaries are
 // named with. node reports "x64" for 64-bit intel/amd; Go calls it "amd64", so
@@ -125,10 +131,15 @@ export function runDaemon(
 
 	createInterceptorScripts(sessionName);
 
-	let outputBuffer = "";
+	const screen = new Screen();
+	const stderrDecoder = new TextDecoder();
+	let bytesReceived = 0;
 	let processExited = false;
 	let exitCode: number | null = null;
-	let lastReadLength = 0; // tracks what the client has seen
+	let lastReadBytes = 0; // what the client has seen, for --wait
+	// rendered output handed out since urls were last reported: a "opening your
+	// browser" announcement may arrive a read before the url it belongs to.
+	let selfOpenWindow = "";
 	// every url surfaced to the client (output scans + browser-open intercepts),
 	// punctuation-trimmed and deduped; the client decides what to do with them
 	const detectedUrls = new Set<string>();
@@ -146,7 +157,7 @@ export function runDaemon(
 	const reportedIntercepted = new Set<string>();
 
 	type Waiter = {
-		resolve: (output: string) => void;
+		resolve: () => void;
 		timer: ReturnType<typeof setTimeout>;
 	};
 	const waiters: Waiter[] = [];
@@ -169,7 +180,7 @@ export function runDaemon(
 			let w = waiters.shift();
 			while (w) {
 				clearTimeout(w.timer);
-				w.resolve(outputBuffer);
+				w.resolve();
 				w = waiters.shift();
 			}
 		}, NOTIFY_SETTLE_MS);
@@ -226,35 +237,42 @@ export function runDaemon(
 		} catch {}
 	}
 
-	stdout?.on("data", (chunk: Buffer) => {
-		const text = chunk.toString();
-		outputBuffer += text;
-		scanForUrls(text);
+	function onOutput(bytes: Buffer | string) {
+		bytesReceived += bytes.length;
+		void screen.write(bytes);
+		scanForUrls(typeof bytes === "string" ? bytes : bytes.toString());
 		notifyWaiters();
-	});
+	}
 
-	stderr?.on("data", (chunk: Buffer) => {
-		const text = chunk.toString();
-		outputBuffer += text;
-		scanForUrls(text);
-		notifyWaiters();
-	});
+	// stdout carries the whole pty (raw bytes, so xterm decodes utf-8 split across
+	// chunks); stderr is only ptybridge's own messages, decoded separately so the
+	// two streams can't interleave inside a multi-byte sequence.
+	stdout?.on("data", (chunk: Buffer) => onOutput(chunk));
+	stderr?.on("data", (chunk: Buffer) =>
+		onOutput(stderrDecoder.decode(chunk, { stream: true })),
+	);
 
-	proc.on("exit", (code) => {
+	// persist rendered output so reads work after the daemon shuts down
+	async function persistOutput() {
+		await screen.flush();
+		const footer = processExited ? `\n[exited ${exitCode}]` : "";
+		try {
+			writeFileSync(sessionOutputFile(sessionName), `${screen.all()}${footer}`);
+		} catch {}
+	}
+
+	// "close" (not "exit"): stdio is fully drained, so no output lands after it
+	proc.on("close", async (code) => {
 		processExited = true;
 		exitCode = code;
-		outputBuffer += `\n[exited ${code}]`;
-		// persist output so reads work after daemon shuts down
-		try {
-			writeFileSync(sessionOutputFile(sessionName), outputBuffer);
-		} catch {}
+		await persistOutput();
 		// flush immediately on exit — no need to debounce
 		if (notifyDebounce) clearTimeout(notifyDebounce);
 		notifyDebounce = null;
 		let w = waiters.shift();
 		while (w) {
 			clearTimeout(w.timer);
-			w.resolve(outputBuffer);
+			w.resolve();
 			w = waiters.shift();
 		}
 
@@ -269,7 +287,7 @@ export function runDaemon(
 	});
 
 	proc.on("error", (err) => {
-		outputBuffer += `\n[error: ${err.message}]`;
+		void screen.write(`\r\n[error: ${err.message}]\r\n`);
 		processExited = true;
 	});
 
@@ -286,9 +304,20 @@ export function runDaemon(
 		});
 	});
 
-	function respondWithOutput(socket: Socket, updateSnapshot = true) {
+	function render(mode: OutputMode): string {
+		// always advance the "new" cursor: whatever the client was shown counts as seen
+		const fresh = screen.takeNew();
+		selfOpenWindow = `${selfOpenWindow}${fresh}\n`.slice(-SELF_OPEN_WINDOW_MAX);
+		if (mode === "screen") return screen.screen();
+		if (mode === "all") return screen.all();
+		return fresh;
+	}
+
+	async function respondWithOutput(socket: Socket, mode: OutputMode) {
+		lastReadBytes = bytesReceived;
+		await screen.flush();
+		const output = render(mode);
 		readInterceptedUrls();
-		if (updateSnapshot) lastReadLength = outputBuffer.length;
 		const newUrls = Array.from(detectedUrls).filter(
 			(u) => !reportedUrls.has(u),
 		);
@@ -299,35 +328,39 @@ export function runDaemon(
 			(u) => !reportedIntercepted.has(u),
 		);
 		for (const u of intercepted) reportedIntercepted.add(u);
+		const reportsUrls = newUrls.length > 0 || intercepted.length > 0;
+		const selfOpen = reportsUrls && announcesSelfOpen(selfOpenWindow);
+		if (reportsUrls) selfOpenWindow = "";
 		socket.end(
 			JSON.stringify({
 				ok: true,
-				output: outputBuffer,
-				outputLength: outputBuffer.length,
+				output,
 				exited: processExited,
 				exitCode,
 				...(newUrls.length > 0 ? { urls: newUrls } : {}),
 				...(intercepted.length > 0 ? { intercepted } : {}),
+				...(selfOpen ? { selfOpen } : {}),
 			}),
 		);
 	}
 
 	function waitForNewOutput(
 		socket: Socket,
-		sinceLength: number,
+		sinceBytes: number,
 		timeout: number,
+		mode: OutputMode,
 	) {
-		if (outputBuffer.length > sinceLength || processExited) {
-			respondWithOutput(socket);
+		if (bytesReceived > sinceBytes || processExited) {
+			void respondWithOutput(socket, mode);
 			return;
 		}
 
 		const waiter: Waiter = {
-			resolve: () => respondWithOutput(socket),
+			resolve: () => void respondWithOutput(socket, mode),
 			timer: setTimeout(() => {
 				const idx = waiters.indexOf(waiter);
 				if (idx !== -1) waiters.splice(idx, 1);
-				respondWithOutput(socket);
+				void respondWithOutput(socket, mode);
 			}, timeout),
 		};
 		waiters.push(waiter);
@@ -350,14 +383,21 @@ export function runDaemon(
 	}
 
 	function handle(msg: DaemonMessage, socket: Socket) {
+		const mode = msg.mode ?? "new";
+		if (!OUTPUT_MODES.includes(mode)) {
+			socket.end(
+				JSON.stringify({ ok: false, error: `unknown output mode: ${mode}` }),
+			);
+			return;
+		}
 		switch (msg.action) {
 			case "read":
 				if (msg.wait) {
 					const timeout = msg.timeout ?? 30000;
 					// wait for output beyond what the client last saw
-					waitForNewOutput(socket, lastReadLength, timeout);
+					waitForNewOutput(socket, lastReadBytes, timeout, mode);
 				} else {
-					respondWithOutput(socket);
+					void respondWithOutput(socket, mode);
 				}
 				break;
 
@@ -368,7 +408,7 @@ export function runDaemon(
 				}
 				withSettleDelay(() => {
 					writeToStdin(msg.data);
-					lastReadLength = outputBuffer.length;
+					lastReadBytes = bytesReceived;
 					socket.end(JSON.stringify({ ok: true }));
 				});
 				break;
@@ -378,20 +418,17 @@ export function runDaemon(
 					socket.end(JSON.stringify({ ok: false, error: "process exited" }));
 					break;
 				}
-				const beforeLength = outputBuffer.length;
+				const beforeBytes = bytesReceived;
 				const timeout = msg.timeout ?? 30000;
 				withSettleDelay(() => {
 					writeToStdin(msg.data);
-					waitForNewOutput(socket, beforeLength, timeout);
+					waitForNewOutput(socket, beforeBytes, timeout, mode);
 				});
 				break;
 			}
 
 			case "stop":
-				// persist output before shutdown
-				try {
-					writeFileSync(sessionOutputFile(sessionName), outputBuffer);
-				} catch {}
+				void persistOutput();
 				proc.kill("SIGTERM");
 				socket.end(JSON.stringify({ ok: true }));
 				setTimeout(() => {

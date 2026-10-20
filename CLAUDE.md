@@ -8,6 +8,7 @@ Session wrapper for interactive CLI commands. Lets claude code run interactive l
 - `src/daemon.ts` — detached daemon per session, spawns target command, unix socket server
 - `src/client.ts` — connects to daemon via unix socket, sends JSON commands
 - `src/paths.ts` — session dir/socket path helpers
+- `src/screen.ts` — per-session virtual terminal (`@xterm/headless`, pinned 6.0.0, bundled into bin/) with `takeNew`/`screen`/`all` rendering
 - `ptybridge/main.go` — Go PTY bridge source, allocates real terminal for child process
 - `native/ptybridge-{os}-{arch}` — compiled Go PTY binaries (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64)
 
@@ -17,15 +18,15 @@ Sessions stored at `~/.noninteractive/sessions/<name>.sock`. Protocol is JSON ov
 
 ```
 noninteractive start <name> [args...]          # start session (runs npx <name> in a PTY)
-noninteractive send  <name> <text> [--wait]    # send keystrokes (--wait blocks for new output)
-noninteractive read  <name> [--wait]           # read terminal output (--wait blocks for new output)
+noninteractive send  <name> <text> [--wait] [--screen|--all]   # send keystrokes, print what changed
+noninteractive read  <name> [--wait] [--screen|--all]          # print output since the last send/read
 noninteractive stop  <name>                    # stop a session
 noninteractive list                            # show active sessions (alias: ls)
 ```
 
 The `--wait` flag on `send` and `read` blocks until new output appears (default 30s timeout, configurable with `--timeout <ms>`). The daemon-side action for `send --wait` is `sendread`.
 
-Output is clean text by default — ANSI escape codes are stripped so agents get readable content without terminal formatting artifacts.
+Output is rendered, not stripped: the daemon feeds every PTY chunk into a `Screen` (xterm headless, 80x24 to match `pty.StartWithSize` in ptybridge, 5000 lines scrollback), so redraws (arrow menus, readline `ESC[1G ESC[0J`, `ESC[2K` repaints) collapse to their final state. Request field `mode`: `new` (default — rows touched since the previous response, from the cursor row the last response ended on, through the last non-empty row; erase/line-edit CSI handlers and a diff of the rows above the mark catch redraws that move up), `screen` (viewport), `all` (scrollback + viewport). Every response advances the `new` cursor. Bold/inverse → `**text**` (underline deliberately not: it wraps links). Soft-wrapped rows are rejoined so long URLs stay whole. `[exited N]` is printed once by the client from `exitCode`; on exit/stop the daemon saves rendered `all()` + `[exited N]` to `<name>.output` for reads after it shuts down. Self-open detection (`announcesSelfOpen`) runs in the daemon over rendered output handed out since the last url-bearing response and is sent as `selfOpen`.
 
 ## Build
 

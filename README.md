@@ -25,8 +25,12 @@ npx noninteractive send workos "my-api-key" --wait
 # Wait for new output without sending (e.g. OAuth callback)
 npx noninteractive read workos --wait
 
-# Read current output (non-blocking)
+# Read output since the last send/read (non-blocking)
 npx noninteractive read workos
+
+# Show the whole current screen / the full rendered history
+npx noninteractive read workos --screen
+npx noninteractive read workos --all
 
 # Stop a session
 npx noninteractive stop workos
@@ -61,7 +65,14 @@ npx noninteractive stop workos
 
 ## The `--wait` flag
 
-Both `send` and `read` support `--wait` (`-w`), which blocks until new output appears instead of returning immediately. This eliminates polling loops and reduces tool calls by ~7-10x. Output is returned as clean text with ANSI escape codes stripped by default, so agents get readable content without terminal formatting noise.
+Both `send` and `read` support `--wait` (`-w`), which blocks until new output appears instead of returning immediately. This eliminates polling loops and reduces tool calls by ~7-10x. Output is rendered through a headless terminal emulator ([xterm.js](https://github.com/xtermjs/xterm.js), bundled), so agents get clean text: arrow-key menus, spinners and readline redraws show their final state once instead of every repaint stacked up.
+
+Each `send`/`read` prints only what is **new since the previous `send`/`read`** — the next prompt, or the menu as it now looks — so there is no need to pipe through `tail`. Two flags change that:
+
+```bash
+npx noninteractive read workos --screen   # the current 80x24 screen
+npx noninteractive read workos --all      # the whole rendered history (scrollback)
+```
 
 ```bash
 # Old way (polling): send + read + read + read...

@@ -2,10 +2,10 @@
 
 import { execSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { type DaemonResponse, sendMessage } from "./client";
-import { ensureSessionsDir, sessionOutputFile, socketPath } from "./paths";
+import { type DaemonResponse, type OutputMode, sendMessage } from "./client";
 import { needsEnterHint } from "./input";
-import { announcesSelfOpen, isAuthUrl, pickAutoOpenUrl } from "./urls";
+import { ensureSessionsDir, sessionOutputFile, socketPath } from "./paths";
+import { isAuthUrl, pickAutoOpenUrl } from "./urls";
 
 const HELP = `noninteractive — run interactive CLI commands non-interactively.
 
@@ -13,8 +13,8 @@ usage: npx noninteractive <tool> [args...]
 
 commands:
   <tool> [args...]                       start a session (runs npx <tool> in a PTY)
-  send  <session> <text> [--no-wait]     send keystrokes and return output (--no-wait to fire-and-forget)
-  read  <session> [--wait] [--timeout N] read terminal output (--wait blocks until new output)
+  send  <session> <text> [--no-wait]     send keystrokes, print what changed (--no-wait to fire-and-forget)
+  read  <session> [--wait] [--timeout N] print output since your last send/read (--wait blocks until new output)
   stop  <session>                        stop a session
   list                                   show active sessions
   start [--name N] [--cwd D] <cmd> [args...]  explicit start (for non-npx commands)
@@ -26,6 +26,12 @@ flags:
   --wait, -w         block until new output appears (for read)
   --timeout <ms>     max wait time in ms (default: 30000)
   --no-open          don't auto-open any URL (still surfaced in output)
+  --screen           (send/read) print the current 80x24 screen instead of what's new
+  --all              (send/read) print the whole rendered session history
+
+output is rendered through a terminal emulator: menus and prompts that redraw
+show their final state once, and send/read print only what is new since the
+previous send/read — no need to pipe through tail/head.
 
 all detected URLs are surfaced; the first high-confidence auth URL
 (device/oauth/authorize/activate/callback) is auto-opened in a browser so the
@@ -51,108 +57,8 @@ more examples:
   npx noninteractive supabase init          # session "supabase"
   npx noninteractive start vercel login     # explicit start for non-npx commands`;
 
-function stripAnsi(s: string): string {
-	// step 0: screen-clear — only keep content after the last clear screen
-	const lastClear = Math.max(
-		s.lastIndexOf("\x1b[2J"),
-		s.lastIndexOf("\x1b[H\x1b[2J"),
-	);
-	if (lastClear !== -1) s = s.slice(lastClear);
-
-	// step 1: erase-line → newline
-	s = s.replace(/\x1b\[[012]?K/g, "\n");
-
-	// step 2: convert bold/underline/inverse to **...** markers
-	// stateful pass: track open spans, emit markers on close
-	let result = "";
-	let bold = false;
-	let boldBuf = "";
-	let i = 0;
-	while (i < s.length) {
-		// match any SGR sequence: \x1b[ ... m
-		if (s[i] === "\x1b" && s[i + 1] === "[") {
-			const end = s.indexOf("m", i + 2);
-			if (end !== -1 && end - i < 16 && /^[\d;]*$/.test(s.slice(i + 2, end))) {
-				const codes = s
-					.slice(i + 2, end)
-					.split(";")
-					.map(Number);
-				for (const code of codes) {
-					if (code === 1 || code === 4 || code === 7) {
-						// bold, underline, or inverse ON
-						if (!bold) {
-							bold = true;
-							boldBuf = "";
-						}
-					} else if (code === 0 || code === 22 || code === 24 || code === 27) {
-						// reset / bold off / underline off / inverse off
-						if (bold && boldBuf.trim()) {
-							result += `**${boldBuf}**`;
-						} else if (bold) {
-							result += boldBuf;
-						}
-						bold = false;
-						boldBuf = "";
-					}
-				}
-				i = end + 1;
-				continue;
-			}
-		}
-		// match any other escape sequence (non-SGR) — strip it
-		if (s[i] === "\x1b") {
-			if (s[i + 1] === "[") {
-				const end = s.slice(i + 2).search(/[\x40-\x7e]/);
-				if (end !== -1) {
-					i += end + 3;
-					continue;
-				}
-			} else if (s[i + 1] === "]") {
-				const end = s.indexOf("\x07", i);
-				if (end !== -1) {
-					i = end + 1;
-					continue;
-				}
-				const end2 = s.indexOf("\x1b\\", i);
-				if (end2 !== -1) {
-					i = end2 + 2;
-					continue;
-				}
-			} else if (s[i + 1] === "(" || s[i + 1] === ")") {
-				i += 3;
-				continue;
-			} else {
-				i += 2;
-				continue;
-			}
-		}
-		if (s[i] === "\x07") {
-			i++;
-			continue;
-		}
-		if (bold) {
-			boldBuf += s[i];
-		} else {
-			result += s[i];
-		}
-		i++;
-	}
-	// flush any remaining bold buffer
-	if (bold && boldBuf.trim()) {
-		result += `**${boldBuf}**`;
-	} else if (bold) {
-		result += boldBuf;
-	}
-
-	return result.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n");
-}
-
 const seenUrls = new Set<string>();
 let openedAuthUrl = false;
-// how much of the output buffer we've already scanned for a self-open
-// announcement. only advances on url-bearing calls, so an announcement that
-// arrives in an intervening no-url read is still paired with the next url.
-let selfOpenScanLen = 0;
 
 function openUrl(url: string): boolean {
 	try {
@@ -186,11 +92,9 @@ function handleUrls(res: DaemonResponse, noOpen: boolean) {
 	const fresh = (res.urls ?? []).filter((u) => !seenUrls.has(u));
 	for (const u of fresh) seenUrls.add(u);
 
-	// scan only output since the last call we acted on, so a stale self-open
-	// announcement from an earlier step can't suppress opening a later url.
-	const fullOutput = res.output ?? "";
-	const selfOpens = announcesSelfOpen(fullOutput.slice(selfOpenScanLen));
-	selfOpenScanLen = fullOutput.length;
+	// the daemon checks output since the last url-bearing response, so a stale
+	// self-open announcement from an earlier step can't suppress a later url.
+	const selfOpens = res.selfOpen === true;
 
 	let opened: string | undefined;
 	if (!noOpen && !openedAuthUrl) {
@@ -370,11 +274,12 @@ async function start(
 	for (let i = 0; i < 150; i++) {
 		await new Promise((r) => setTimeout(r, 200));
 		try {
-			const res = await sendMessage(sock, { action: "read" });
+			const res = await sendMessage(sock, { action: "read", mode: "all" });
 			handleUrls(res, noOpen);
-			const clean = stripSpinners(stripAnsi(res.output ?? ""));
+			const output = requireOutput(res);
+			const clean = stripSpinners(output);
 			if (clean.length > 10) {
-				process.stdout.write(stripAnsi(res.output));
+				process.stdout.write(output);
 				if (res.exited) {
 					console.log(`\n[session '${name}' exited ${res.exitCode}]`);
 					// only show "not a session name" hint if exit was very fast with minimal output
@@ -407,7 +312,7 @@ async function start(
 				return;
 			}
 			if (res.exited) {
-				process.stdout.write(stripAnsi(res.output ?? ""));
+				process.stdout.write(output);
 				console.log(`\n[session '${name}' exited ${res.exitCode}]`);
 				if (i < 10) {
 					console.log(
@@ -437,41 +342,71 @@ async function start(
 	);
 }
 
+function requireOutput(res: DaemonResponse): string {
+	if (!res.ok) throw new Error(`daemon error: ${res.error ?? "unknown"}`);
+	if (res.output === undefined)
+		throw new Error("daemon response is missing output");
+	return res.output;
+}
+
+function printOutput(res: DaemonResponse, mode: OutputMode) {
+	const output = requireOutput(res);
+	if (output) process.stdout.write(`${output}\n`);
+	else if (mode === "new") console.log("[no new output]");
+}
+
+function printExit(res: DaemonResponse) {
+	if (!res.exited) return;
+	console.log(`[exited ${res.exitCode}]`);
+	console.log(
+		`[session complete — output above is final, no need to read again]`,
+	);
+}
+
+// daemon gone — fall back to the rendered output it saved on exit/stop
+function printSavedOutput(name: string) {
+	const outputFile = sessionOutputFile(name);
+	if (!existsSync(outputFile)) {
+		console.error(`session '${name}' not found`);
+		process.exit(1);
+	}
+	console.log(readFileSync(outputFile, "utf-8"));
+	console.log(`[session ended — this is its saved final output]`);
+}
+
+function parseOutputMode(args: string[]): OutputMode {
+	const screen = args.includes("--screen");
+	const all = args.includes("--all");
+	if (screen && all) {
+		console.error("use either --screen or --all, not both");
+		process.exit(1);
+	}
+	return all ? "all" : screen ? "screen" : "new";
+}
+
 async function read(
 	name: string,
 	wait: boolean,
 	timeout: number,
-	noOpen = false,
+	noOpen: boolean,
+	mode: OutputMode,
 ) {
 	const sock = socketPath(name);
-	const msg: Record<string, unknown> = { action: "read" };
+	const msg: Record<string, unknown> = { action: "read", mode };
 	if (wait) {
 		msg.wait = true;
 		msg.timeout = timeout;
 	}
 	const clientTimeout = wait ? timeout + 5000 : 5000;
+	let res: DaemonResponse;
 	try {
-		const res = await sendMessage(sock, msg, clientTimeout);
-		if (res.output !== undefined) process.stdout.write(stripAnsi(res.output));
-		handleUrls(res, noOpen);
-		if (res.exited) {
-			console.log(`\n[exited ${res.exitCode}]`);
-			console.log(
-				`[session complete — output above is final, no need to read again]`,
-			);
-		}
+		res = await sendMessage(sock, msg, clientTimeout);
 	} catch {
-		// daemon gone — try persisted output file
-		const outputFile = sessionOutputFile(name);
-		if (existsSync(outputFile)) {
-			const output = readFileSync(outputFile, "utf-8");
-			process.stdout.write(stripAnsi(output));
-			console.log(`\n[session exited]`);
-		} else {
-			console.error(`session '${name}' not found`);
-			process.exit(1);
-		}
+		return printSavedOutput(name);
 	}
+	printOutput(res, mode);
+	handleUrls(res, noOpen);
+	printExit(res);
 }
 
 async function send(
@@ -479,7 +414,8 @@ async function send(
 	text: string,
 	wait: boolean,
 	timeout: number,
-	noOpen = false,
+	noOpen: boolean,
+	mode: OutputMode,
 ) {
 	const rawArg = text;
 	// empty string "" is a shorthand for pressing Enter
@@ -521,39 +457,32 @@ async function send(
 		);
 	}
 	const sock = socketPath(name);
+	let res: DaemonResponse;
 	try {
-		if (wait) {
-			const res = await sendMessage(
-				sock,
-				{ action: "sendread", data: text, timeout },
-				timeout + 5000,
-			);
-			if (res.output !== undefined) process.stdout.write(stripAnsi(res.output));
-			handleUrls(res, noOpen);
-			if (res.exited) {
-				console.log(`\n[exited ${res.exitCode}]`);
-				console.log(
-					`[session complete — output above is final, no need to read again]`,
-				);
-			}
-		} else {
-			await sendMessage(sock, { action: "send", data: text });
-			console.log(
-				`[sent to '${name}' — run "npx noninteractive read ${name}" to see the result]`,
-			);
-		}
+		res = wait
+			? await sendMessage(
+					sock,
+					{ action: "sendread", data: text, timeout, mode },
+					timeout + 5000,
+				)
+			: await sendMessage(sock, { action: "send", data: text });
 	} catch {
-		// daemon gone — try persisted output file
-		const outputFile = sessionOutputFile(name);
-		if (existsSync(outputFile)) {
-			const output = readFileSync(outputFile, "utf-8");
-			process.stdout.write(stripAnsi(output));
-			console.log(`\n[session exited]`);
-		} else {
-			console.error(`session '${name}' not found`);
-			process.exit(1);
-		}
+		return printSavedOutput(name);
 	}
+	if (!res.ok && res.error === "process exited") {
+		console.log(`[session '${name}' has exited — input not sent]`);
+		return printSavedOutput(name);
+	}
+	if (!wait) {
+		if (!res.ok) throw new Error(`send failed: ${res.error ?? "unknown"}`);
+		console.log(
+			`[sent to '${name}' — run "npx noninteractive read ${name}" to see the result]`,
+		);
+		return;
+	}
+	printOutput(res, mode);
+	handleUrls(res, noOpen);
+	printExit(res);
 }
 
 async function stop(name: string) {
@@ -647,7 +576,7 @@ flags:
 			const name = readArgs.find((a) => !a.startsWith("-"));
 			if (!name) {
 				console.error(
-					"usage: noninteractive read <session> [-w|--wait] [--timeout <ms>]\n\nexample: npx noninteractive read vercel --wait",
+					"usage: noninteractive read <session> [-w|--wait] [--timeout <ms>] [--screen|--all]\n\nexample: npx noninteractive read vercel --wait",
 				);
 				process.exit(1);
 			}
@@ -656,7 +585,7 @@ flags:
 			const timeoutIdx = readArgs.indexOf("--timeout");
 			const timeout =
 				timeoutIdx !== -1 ? Number(readArgs[timeoutIdx + 1]) : 30000;
-			return read(name, wait, timeout, noOpen);
+			return read(name, wait, timeout, noOpen, parseOutputMode(readArgs));
 		}
 		case "sendread":
 		case "send": {
@@ -666,7 +595,7 @@ flags:
 			const text = positional[1];
 			if (!name || text === undefined) {
 				console.error(
-					'usage: noninteractive send <session> <text> [--no-wait] [--timeout <ms>]\n\nexample: npx noninteractive send workos ""',
+					'usage: noninteractive send <session> <text> [--no-wait] [--timeout <ms>] [--screen|--all]\n\nexample: npx noninteractive send workos ""',
 				);
 				process.exit(1);
 			}
@@ -682,7 +611,7 @@ flags:
 			const timeoutIdx = sendArgs.indexOf("--timeout");
 			const timeout =
 				timeoutIdx !== -1 ? Number(sendArgs[timeoutIdx + 1]) : 30000;
-			return send(name, text, wait, timeout, noOpen);
+			return send(name, text, wait, timeout, noOpen, parseOutputMode(sendArgs));
 		}
 		case "stop": {
 			const name = args[1];
