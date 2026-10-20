@@ -48,7 +48,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.5",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@xterm/headless": "6.0.0"
   },
   "engines": {
     "node": ">=18"
