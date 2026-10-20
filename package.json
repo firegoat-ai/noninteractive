@@ -16,13 +16,13 @@
     "ai-agent",
     "claude-code"
   ],
-  "homepage": "https://github.com/team2027/noninteractive#readme",
+  "homepage": "https://github.com/firegoat-ai/noninteractive#readme",
   "bugs": {
-    "url": "https://github.com/team2027/noninteractive/issues"
+    "url": "https://github.com/firegoat-ai/noninteractive/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/team2027/noninteractive.git"
+    "url": "git+https://github.com/firegoat-ai/noninteractive.git"
   },
   "license": "MIT",
   "author": {
