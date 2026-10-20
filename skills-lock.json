@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "firegoat-onboarding": {
+      "source": "firegoat-ai/skills",
+      "sourceType": "github",
+      "skillPath": "skills/firegoat-onboarding/SKILL.md",
+      "computedHash": "5e7ee5c9ba4c3eaa76e9775f5e662c31277b0a43317b515ff6dcfd16ec1b8ef1"
+    },
+    "suggesting-eval-prompts": {
+      "source": "firegoat-ai/skills",
+      "sourceType": "github",
+      "skillPath": "skills/suggesting-eval-prompts/SKILL.md",
+      "computedHash": "96ccc9bb58bfc824ecf395e3d6f4af473bc0a276271c4f8b07a8608deacc7390"
+    }
+  }
+}

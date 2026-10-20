@@ -1,0 +1,153 @@
+# firegoat.yaml: evals for how well coding agents use noninteractive.
+# Each test runs your claude in an empty folder (.firegoat/runs/...) with `prompt`
+# as the first message, then runs `checks` there. Reference: npx firegoat init --help
+
+# How many times to run each test.
+runs: 1
+
+# Test the local build, not the published package.
+# setup runs once per eval in the repo: build bin/noninteractive.js, pack it (with
+# native/ptybridge-*), and write a tiny arrow-key wizard used by the `menu-wizard` test.
+# workdir_setup installs the tarball into each fresh workdir, so `npx noninteractive`
+# resolves to node_modules/.bin instead of the registry.
+setup:
+  - bun run build
+  - npm pack --pack-destination "$FIREGOAT_OUT"
+  - |
+    cat > "$FIREGOAT_OUT/deploy-wizard.mjs" <<'EOF'
+    #!/usr/bin/env node
+    import { writeFileSync } from "node:fs";
+    import { createInterface } from "node:readline";
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.error("deploy-wizard: needs an interactive terminal (TTY). it has no flags and cannot be piped.");
+      process.exit(1);
+    }
+
+    const out = process.stdout;
+    const menu = (question, options) =>
+      new Promise((resolve) => {
+        let i = 0;
+        const draw = (first) => {
+          if (!first) out.write(`\x1b[${options.length}A`);
+          for (const [k, o] of options.entries())
+            out.write(`\x1b[2K${k === i ? "\x1b[36m> " : "  "}${o}\x1b[0m\n`);
+        };
+        out.write(`? ${question} (use arrow keys, enter to confirm)\n`);
+        draw(true);
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        const onData = (buf) => {
+          for (const key of buf.toString().match(/\x1b\[[A-D]|[\s\S]/g) ?? []) {
+            if (key === "\x03") process.exit(130);
+            if (key === "\x1b[A") i = (i + options.length - 1) % options.length;
+            else if (key === "\x1b[B") i = (i + 1) % options.length;
+            else if (key === "\r" || key === "\n") {
+              process.stdin.off("data", onData);
+              process.stdin.setRawMode(false);
+              process.stdin.pause();
+              out.write(`ok ${question} ${options[i]}\n`);
+              return resolve(options[i]);
+            } else continue;
+            draw(false);
+          }
+        };
+        process.stdin.on("data", onData);
+      });
+
+    const ask = (question) =>
+      new Promise((resolve) => {
+        const rl = createInterface({ input: process.stdin, output: out });
+        rl.question(`? ${question} `, (a) => {
+          rl.close();
+          resolve(a.trim());
+        });
+      });
+
+    const name = await ask("Service name:");
+    const region = await menu("Region:", ["us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"]);
+    const size = await menu("Instance size:", ["small", "medium", "large"]);
+    const confirm = await menu("Write deploy.json?", ["Yes", "No"]);
+    if (confirm !== "Yes") {
+      console.log("aborted, nothing written.");
+      process.exit(1);
+    }
+    writeFileSync("deploy.json", `${JSON.stringify({ name, region, size }, null, 2)}\n`);
+    console.log("wrote deploy.json");
+    EOF
+workdir_setup: >-
+  npm init -y >/dev/null &&
+  npm install --no-audit --no-fund "$FIREGOAT_OUT"/noninteractive-*.tgz >/dev/null &&
+  cp "$FIREGOAT_OUT/deploy-wizard.mjs" .
+
+tests:
+  - name: quickstart
+    prompt: >-
+      I want my coding agent to be able to answer interactive CLI prompts, so I'm
+      trying noninteractive (https://github.com/team2027/noninteractive#readme).
+      Use it to run the real interactive `npm init` (not `npm init -y`) inside a new
+      folder ./tide-clock and answer its questions: name tide-clock, version 0.1.0,
+      description "A tiny tide clock", license MIT, defaults for everything else.
+      noninteractive is already installed in this folder from the build under test.
+      Do not install or upgrade it from the registry.
+    end_goal: >-
+      tide-clock/package.json was written by npm init's own interactive flow, driven
+      through noninteractive (not hand-written, not npm init -y / npm pkg set), and
+      has name tide-clock, version 0.1.0, description "A tiny tide clock" and license MIT.
+    checks:
+      - run: grep -Eq '"command":"[^"]*noninteractive [^"]*npm init' "$FIREGOAT_SESSION"
+      - run: >-
+          node -e 'const p=require(process.argv[1]);
+          if(p.name!=="tide-clock"||p.version!=="0.1.0"||p.description!=="A tiny tide clock"||p.license!=="MIT")
+          {console.error(p);process.exit(1)}' "$FIREGOAT_WORKDIR/tide-clock/package.json"
+      - run: >-
+          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+    timeout: 600
+
+  - name: menu-wizard
+    prompt: >-
+      Our internal deploy wizard ./deploy-wizard.mjs (run it with node) only works in
+      an interactive terminal: it has no flags and can't be piped. Use noninteractive
+      (https://github.com/team2027/noninteractive#readme) to run it and configure a
+      service named billing-api in region eu-central-1 with a large instance, and let
+      it write deploy.json. noninteractive is already installed in this folder from
+      the build under test. Do not install or upgrade it from the registry, and don't
+      edit the wizard.
+    end_goal: >-
+      The wizard itself wrote deploy.json (it printed "wrote deploy.json") with name
+      billing-api, region eu-central-1, size large, after the agent navigated its
+      arrow-key menus through noninteractive. deploy.json was not hand-written and the
+      wizard was not modified.
+    checks:
+      - run: grep -Eq '"command":"[^"]*noninteractive [^"]*deploy-wizard' "$FIREGOAT_SESSION"
+      - run: grep -q 'wrote deploy.json' "$FIREGOAT_SESSION"
+      - run: >-
+          node -e 'const p=require(process.argv[1]);
+          if(p.name!=="billing-api"||p.region!=="eu-central-1"||p.size!=="large")
+          {console.error(p);process.exit(1)}' "$FIREGOAT_WORKDIR/deploy.json"
+      - run: cmp -s "$FIREGOAT_WORKDIR/deploy-wizard.mjs" "$FIREGOAT_OUT/deploy-wizard.mjs"
+      - run: >-
+          ! grep -Eq '"name":"(Write|Edit)","input":\{[^}]*"file_path":"[^"]*deploy(\.json|-wizard)' "$FIREGOAT_SESSION"
+      - run: >-
+          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+    timeout: 600
+
+  - name: repl-session
+    prompt: >-
+      Use noninteractive (https://github.com/team2027/noninteractive#readme) to keep
+      an interactive Node.js REPL (`node` with no arguments) open as a session. From
+      inside that REPL, compute the SHA-256 hex digest of the string firegoat and
+      write it to hash.txt. Leave nothing running when you're done.
+      noninteractive is already installed in this folder from the build under test.
+      Do not install or upgrade it from the registry.
+    end_goal: >-
+      hash.txt holds the SHA-256 hex of "firegoat", produced by code run inside a Node
+      REPL driven through noninteractive (not computed by a shell one-liner or written
+      by hand), and the agent stopped the session at the end.
+    checks:
+      - run: grep -q 367d81fa7c403d0fb214dafa348154f77c79088fe2088e6e08ce58954ac45d49 "$FIREGOAT_WORKDIR/hash.txt"
+      - run: grep -Eq '"command":"[^"]*noninteractive (start )?[^"]*node' "$FIREGOAT_SESSION"
+      - run: grep -Eq '"command":"[^"]*noninteractive stop ' "$FIREGOAT_SESSION"
+      - run: >-
+          ! grep -Eq '"command":"[^"]*(npm (install|i|add) [^"]*noninteractive|noninteractive@|bunx noninteractive|pnpm (add|dlx) noninteractive)' "$FIREGOAT_SESSION"
+    timeout: 600

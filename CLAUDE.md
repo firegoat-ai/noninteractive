@@ -44,6 +44,10 @@ OAuth/browser URLs are auto-detected, surfaced to the agent, and the single auth
 
 Session dirs (bin/, urls file) cleaned up on stop/exit.
 
+## AX evals (firegoat)
+
+`firegoat.yaml` holds 3 agent-experience evals (quickstart `npm init`, arrow-key menu wizard, node REPL lifecycle). Run with `npx -y firegoat@0.9.0 eval --json`; results land in `.firegoat/runs/` (ignored). Setup packs the local build and installs the tgz into each workdir — a PATH-only binary doesn't work because `npx noninteractive` falls back to the registry. Each eval run rebuilds `bin/`. Known friction surfaced: `send` returns the full transcript incl. every menu redraw, `list` lags right after `stop`, dead sessions never pruned from `~/.noninteractive`.
+
 ## Notes
 
 - daemon uses node:child_process and node:net (not Bun-specific APIs) for subprocess/socket — needed for detached spawn and unix socket server
