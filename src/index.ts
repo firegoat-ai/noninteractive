@@ -33,6 +33,10 @@ output is rendered through a terminal emulator: menus and prompts that redraw
 show their final state once, and send/read print only what is new since the
 previous send/read — no need to pipe through tail/head.
 
+environment:
+  NONINTERACTIVE_HOME  sessions dir; defaults to ~/.noninteractive. set by harnesses
+                       for isolation — if it's already set, leave it as is.
+
 all detected URLs are surfaced; the first high-confidence auth URL
 (device/oauth/authorize/activate/callback) is auto-opened in a browser so the
 human can complete login. docs/signup/marketing/release links are never opened.
@@ -494,7 +498,7 @@ async function stop(name: string) {
 async function list() {
 	const { readdirSync } = await import("node:fs");
 	ensureSessionsDir();
-	const files = readdirSync((await import("./paths")).SESSIONS_DIR);
+	const files = readdirSync((await import("./paths")).sessionsDir());
 	const sessions = files
 		.filter((f) => f.endsWith(".sock"))
 		.map((f) => f.replace(".sock", ""));

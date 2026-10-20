@@ -98,10 +98,20 @@ npx skills add https://noninteractive.org
 ## How it works
 
 1. `npx noninteractive <tool>` spawns a detached daemon that runs `npx <tool>` inside a real pseudo-terminal (PTY)
-2. The daemon listens on a unix socket at `~/.noninteractive/sessions/<name>.sock`
+2. The daemon listens on a unix socket at `~/.noninteractive/sessions/<name>.sock` (or `$NONINTERACTIVE_HOME/sessions/<name>.sock` when set)
 3. `send --wait` sends keystrokes and blocks until new output appears — one call instead of polling
 4. `read --wait` blocks until output changes — perfect for OAuth flows and long operations
 5. The PTY ensures the child process sees a real terminal — `isTTY` is true, ANSI colors work, interactive menus render correctly
+
+### Isolating sessions (harnesses / operators)
+
+`NONINTERACTIVE_HOME` is the sessions dir; it defaults to `~/.noninteractive`. It's set by harnesses (eval runners, CI) for isolation — agents running inside one should leave it as is.
+
+```bash
+NONINTERACTIVE_HOME=/tmp/ni-run42 <your harness>
+```
+
+Sessions then live in `$NONINTERACTIVE_HOME/sessions`. An empty or relative value is an error. Operators: keep the path short (e.g. `/tmp/ni-x`) — unix socket paths are capped at 103 bytes on macOS (107 on Linux), and a longer one fails with an error naming the path.
 
 ## Why
 

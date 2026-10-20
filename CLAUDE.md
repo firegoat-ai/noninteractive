@@ -12,7 +12,7 @@ Session wrapper for interactive CLI commands. Lets claude code run interactive l
 - `ptybridge/main.go` — Go PTY bridge source, allocates real terminal for child process
 - `native/ptybridge-{os}-{arch}` — compiled Go PTY binaries (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64)
 
-Sessions stored at `~/.noninteractive/sessions/<name>.sock`. Protocol is JSON over unix socket.
+Sessions stored at `~/.noninteractive/sessions/<name>.sock`, or `$NONINTERACTIVE_HOME/sessions/` when that env var is set (`src/paths.ts`; empty/relative values throw; socket paths over the unix limit — 103 bytes macOS, 107 linux — throw naming the path). The detached daemon inherits the client's env, so both resolve the same dir; session bin/ shims and urls files follow it. Protocol is JSON over unix socket.
 
 ## Commands
 
@@ -47,7 +47,7 @@ Session dirs (bin/, urls file) cleaned up on stop/exit.
 
 ## AX evals (firegoat)
 
-`firegoat.yaml` holds 3 agent-experience evals (quickstart `npm init`, arrow-key menu wizard, node REPL lifecycle). Run with `npx -y firegoat@0.9.0 eval --json`; results land in `.firegoat/runs/` (ignored). Setup packs the local build and installs the tgz into each workdir — a PATH-only binary doesn't work because `npx noninteractive` falls back to the registry. Each eval run rebuilds `bin/`. Fixtures live in `evals/fixtures/` (setup copies them to `$FIREGOAT_OUT`; not shipped — package.json `files` whitelists only bin/native). Run with `env -u ANTHROPIC_API_KEY` or firegoat bills the API key instead of the claude login. Known friction surfaced: `send` returns the full transcript incl. every menu redraw, `list` lags right after `stop`, dead sessions never pruned from `~/.noninteractive`.
+`firegoat.yaml` holds 3 agent-experience evals (quickstart `npm init`, arrow-key menu wizard, node REPL lifecycle). Run with `npx -y firegoat@0.9.0 eval --json`; results land in `.firegoat/runs/` (ignored). Setup packs the local build and installs the tgz into each workdir — a PATH-only binary doesn't work because `npx noninteractive` falls back to the registry. Each eval run rebuilds `bin/`. Fixtures live in `evals/fixtures/` (setup copies them to `$FIREGOAT_OUT`; not shipped — package.json `files` whitelists only bin/native). Run with `env -u ANTHROPIC_API_KEY` or firegoat bills the API key instead of the claude login. Isolate sessions with `NONINTERACTIVE_HOME="$PWD/.firegoat/ni" env -u ANTHROPIC_API_KEY npx firegoat eval` — firegoat passes its process env to the agent and checks (its `vars:` only reach setup/checks, not the agent). From a deep worktree path, `$PWD/.firegoat/ni` can exceed the socket length limit; use a shorter dir. The repl-session check asserts no session started in its workdir is still running (matches `list` pids to the workdir via `lsof` cwd). `npx -y` exports `npm_config_yes=true` into firegoat's env, which then leaks into the agent's shell; `env -u npm_config_yes` before `npx -y` does NOT help (npx re-injects it for its child); run a cached firegoat without `-y` (`npx firegoat@0.9.0 …`) to keep it out. Known friction surfaced: `send` returns the full transcript incl. every menu redraw, `list` lags right after `stop`, dead sessions never pruned from `~/.noninteractive` (use `NONINTERACTIVE_HOME` for evals).
 
 ## Notes
 
