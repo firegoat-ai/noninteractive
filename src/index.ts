@@ -27,6 +27,11 @@ flags:
   --timeout <ms>     max wait time in ms (default: 30000)
   --no-open          don't auto-open any URL (still surfaced in output)
 
+environment:
+  NONINTERACTIVE_HOME  absolute dir for session state (default: ~/.noninteractive).
+                       sessions live in $NONINTERACTIVE_HOME/sessions — set it per
+                       project/eval run to isolate sessions from each other.
+
 all detected URLs are surfaced; the first high-confidence auth URL
 (device/oauth/authorize/activate/callback) is auto-opened in a browser so the
 human can complete login. docs/signup/marketing/release links are never opened.
@@ -565,7 +570,7 @@ async function stop(name: string) {
 async function list() {
 	const { readdirSync } = await import("node:fs");
 	ensureSessionsDir();
-	const files = readdirSync((await import("./paths")).SESSIONS_DIR);
+	const files = readdirSync((await import("./paths")).sessionsDir());
 	const sessions = files
 		.filter((f) => f.endsWith(".sock"))
 		.map((f) => f.replace(".sock", ""));
