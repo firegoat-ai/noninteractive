@@ -28,9 +28,8 @@ flags:
   --no-open          don't auto-open any URL (still surfaced in output)
 
 environment:
-  NONINTERACTIVE_HOME  absolute dir for session state (default: ~/.noninteractive).
-                       sessions live in $NONINTERACTIVE_HOME/sessions — set it per
-                       project/eval run to isolate sessions from each other.
+  NONINTERACTIVE_HOME  sessions dir; defaults to ~/.noninteractive. set by harnesses
+                       for isolation — if it's already set, leave it as is.
 
 all detected URLs are surfaced; the first high-confidence auth URL
 (device/oauth/authorize/activate/callback) is auto-opened in a browser so the

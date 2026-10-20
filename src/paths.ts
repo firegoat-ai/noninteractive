@@ -19,7 +19,7 @@ export function noninteractiveHome(env = process.env) {
 	}
 	if (!isAbsolute(value)) {
 		throw new Error(
-			`${HOME_ENV} must be an absolute path, got "${value}". try ${HOME_ENV}="$PWD/${value}"`,
+			`${HOME_ENV} must be an absolute path, got "${value}". it is set by harnesses for isolation; the operator needs a short absolute path like /tmp/ni-x`,
 		);
 	}
 	return resolve(value);
@@ -43,7 +43,7 @@ export function socketPath(
 	if (Buffer.byteLength(path) > limit) {
 		throw new Error(
 			`socket path is ${Buffer.byteLength(path)} bytes, over the ${limit}-byte unix socket limit on ${platform}: ${path}\n` +
-				`use a shorter session name or a shorter ${HOME_ENV}`,
+				`if ${HOME_ENV} is set by your harness, it needs a short path like /tmp/ni-x (the operator sets it, not the agent)`,
 		);
 	}
 	return path;

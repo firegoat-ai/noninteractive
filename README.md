@@ -92,15 +92,15 @@ npx skills add https://noninteractive.org
 4. `read --wait` blocks until output changes — perfect for OAuth flows and long operations
 5. The PTY ensures the child process sees a real terminal — `isTTY` is true, ANSI colors work, interactive menus render correctly
 
-### Isolating sessions
+### Isolating sessions (harnesses / operators)
 
-Set `NONINTERACTIVE_HOME` to an absolute directory to keep sessions apart, e.g. per project, CI job or eval run:
+`NONINTERACTIVE_HOME` is the sessions dir; it defaults to `~/.noninteractive`. It's set by harnesses (eval runners, CI) for isolation — agents running inside one should leave it as is.
 
 ```bash
-NONINTERACTIVE_HOME="$PWD/.ni" npx noninteractive list
+NONINTERACTIVE_HOME=/tmp/ni-run42 <your harness>
 ```
 
-Sessions then live in `$NONINTERACTIVE_HOME/sessions` instead of `~/.noninteractive/sessions`. An empty or relative value is an error. Keep the path short: unix socket paths are capped at 103 bytes on macOS (107 on Linux), and a longer one fails with an error naming the path.
+Sessions then live in `$NONINTERACTIVE_HOME/sessions`. An empty or relative value is an error. Operators: keep the path short (e.g. `/tmp/ni-x`) — unix socket paths are capped at 103 bytes on macOS (107 on Linux), and a longer one fails with an error naming the path.
 
 ## Why
 
